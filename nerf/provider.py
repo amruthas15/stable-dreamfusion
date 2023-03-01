@@ -201,32 +201,38 @@ class NeRFDataset:
 
         B = len(index) # always 1
 
-        if self.training:
-            # random pose on the fly
-            poses, dirs = rand_poses(B, self.device, radius_range=self.opt.radius_range, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front, jitter=self.opt.jitter_pose, uniform_sphere_rate=self.opt.uniform_sphere_rate)
+        # random image coordinates - [B, 2]
+        image_coord = torch.randint(0, self.W, (1,B))
+        image_coord = torch.cat((image_coord, torch.randint(0, self.H, (1,B))), 1)
+        image_coord = image_coord.to(device = self.device)
 
-            # random focal
-            fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
-        else:
-            # circle pose
-            phi = (index[0] / self.size) * 360
-            poses, dirs = circle_poses(self.device, radius=self.opt.radius_range[1] * 1.2, theta=60, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
+        # if self.training:
+        #     # random pose on the fly
+        #     poses, dirs = rand_poses(B, self.device, radius_range=self.opt.radius_range, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front, jitter=self.opt.jitter_pose, uniform_sphere_rate=self.opt.uniform_sphere_rate)
 
-            # fixed focal
-            fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
+        #     # random focal
+        #     fov = random.random() * (self.opt.fovy_range[1] - self.opt.fovy_range[0]) + self.opt.fovy_range[0]
+        # else:
+        #     # circle pose
+        #     phi = (index[0] / self.size) * 360
+        #     poses, dirs = circle_poses(self.device, radius=self.opt.radius_range[1] * 1.2, theta=60, phi=phi, return_dirs=self.opt.dir_text, angle_overhead=self.opt.angle_overhead, angle_front=self.opt.angle_front)
 
-        focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
-        intrinsics = np.array([focal, focal, self.cx, self.cy])
+        #     # fixed focal
+        #     fov = (self.opt.fovy_range[1] + self.opt.fovy_range[0]) / 2
+
+        # focal = self.H / (2 * np.tan(np.deg2rad(fov) / 2))
+        # intrinsics = np.array([focal, focal, self.cx, self.cy])
         
-        # sample a low-resolution but full image
-        rays = get_rays(poses, intrinsics, self.H, self.W, -1)
+        # # sample a low-resolution but full image
+        # rays = get_rays(poses, intrinsics, self.H, self.W, -1)
 
         data = {
             'H': self.H,
             'W': self.W,
-            'rays_o': rays['rays_o'],
-            'rays_d': rays['rays_d'],
-            'dir': dirs,
+            'image_coord': image_coord,
+            # 'rays_o': rays['rays_o'],
+            # 'rays_d': rays['rays_d'],
+            # 'dir': dirs,
         }
 
         return data
