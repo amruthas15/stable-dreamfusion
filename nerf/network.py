@@ -100,14 +100,14 @@ class NeRFNetwork(NeRFRenderer):
 
         self.num_layers = num_layers
         self.hidden_dim = hidden_dim
-        self.encoder, self.in_dim = get_encoder(encoding, input_dim=3, multires=6)
+        self.encoder, self.in_dim = get_encoder(encoding, input_dim=2, multires=6)
         self.sigma_net = MLP(self.in_dim, 4, hidden_dim, num_layers, bias=True, block=ResBlock)
 
         # background network
         if self.bg_radius > 0:
             self.num_layers_bg = num_layers_bg   
             self.hidden_dim_bg = hidden_dim_bg
-            self.encoder_bg, self.in_dim_bg = get_encoder(encoding, input_dim=3, multires=4)
+            self.encoder_bg, self.in_dim_bg = get_encoder(encoding, input_dim=2, multires=4)
             self.bg_net = MLP(self.in_dim_bg, 3, hidden_dim_bg, num_layers_bg, bias=True)
             
         else:
@@ -123,7 +123,7 @@ class NeRFNetwork(NeRFRenderer):
         return g
 
     def common_forward(self, x):
-        # x: [N, 3], in [-bound, bound]
+        # x: [N, 2], in [-bound, bound]
 
         # sigma
         enc = self.encoder(x, bound=self.bound)
@@ -142,13 +142,13 @@ class NeRFNetwork(NeRFRenderer):
         dx_neg, _ = self.common_forward((x + torch.tensor([[-epsilon, 0.00, 0.00]], device=x.device)).clamp(-self.bound, self.bound))
         dy_pos, _ = self.common_forward((x + torch.tensor([[0.00, epsilon, 0.00]], device=x.device)).clamp(-self.bound, self.bound))
         dy_neg, _ = self.common_forward((x + torch.tensor([[0.00, -epsilon, 0.00]], device=x.device)).clamp(-self.bound, self.bound))
-        dz_pos, _ = self.common_forward((x + torch.tensor([[0.00, 0.00, epsilon]], device=x.device)).clamp(-self.bound, self.bound))
-        dz_neg, _ = self.common_forward((x + torch.tensor([[0.00, 0.00, -epsilon]], device=x.device)).clamp(-self.bound, self.bound))
+        #dz_pos, _ = self.common_forward((x + torch.tensor([[0.00, 0.00, epsilon]], device=x.device)).clamp(-self.bound, self.bound))
+        #dz_neg, _ = self.common_forward((x + torch.tensor([[0.00, 0.00, -epsilon]], device=x.device)).clamp(-self.bound, self.bound))
         
         normal = torch.stack([
             0.5 * (dx_pos - dx_neg) / epsilon, 
             0.5 * (dy_pos - dy_neg) / epsilon, 
-            0.5 * (dz_pos - dz_neg) / epsilon
+            #0.5 * (dz_pos - dz_neg) / epsilon
         ], dim=-1)
 
         return -normal
@@ -167,10 +167,9 @@ class NeRFNetwork(NeRFRenderer):
 
         return normal
         
-    def forward(self, x, d, l=None, ratio=1, shading='albedo'):
-        # x: [N, 3], in [-bound, bound]
-        # d: [N, 3], view direction, nomalized in [-1, 1]
-        # l: [3], plane light direction, nomalized in [-1, 1]
+    def forward(self, x, l=None, ratio=1, shading='albedo'):
+        # x: [B, 2], in [-bound, bound]
+        # l: [2], plane light direction, nomalized in [-1, 1]
         # ratio: scalar, ambient ratio, 1 == no shading (albedo only), 0 == only shading (textureless)
 
         if shading == 'albedo':
@@ -188,13 +187,13 @@ class NeRFNetwork(NeRFRenderer):
                 x.requires_grad_(True)
                 sigma, albedo = self.common_forward(x)
                 # query gradient
-                normal = - torch.autograd.grad(torch.sum(sigma), x, create_graph=True)[0] # [N, 3]
+                normal = - torch.autograd.grad(torch.sum(sigma), x, create_graph=True)[0] # [B, 2]
             normal = safe_normalize(normal)
             # normal = torch.nan_to_num(normal)
             # normal = normal.detach()
 
             # lambertian shading
-            lambertian = ratio + (1 - ratio) * (normal @ l).clamp(min=0) # [N,]
+            lambertian = ratio + (1 - ratio) * (normal @ l).clamp(min=0) # [B,]
 
             if shading == 'textureless':
                 color = lambertian.unsqueeze(-1).repeat(1, 3)
