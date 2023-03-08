@@ -200,10 +200,11 @@ class NeRFDataset:
     def collate(self, index):
 
         B = len(index) # always 1
+        N = self.W * self.H
 
-        # random image coordinates - [B, 2]
-        image_coord = torch.randint(0, self.W, (1,B))
-        image_coord = torch.cat((image_coord, torch.randint(0, self.H, (1,B))), 1)
+        # random image coordinates - [B, N, 2]
+        image_coord = torch.randint(0, self.W, (B,N,1))
+        image_coord = torch.cat((image_coord, torch.randint(0, self.H, (B,N,1))), 2)
         image_coord = image_coord.to(device = self.device)
 
         # if self.training:

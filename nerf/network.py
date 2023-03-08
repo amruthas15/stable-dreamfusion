@@ -167,42 +167,16 @@ class NeRFNetwork(NeRFRenderer):
 
         return normal
         
-    def forward(self, x, l=None, ratio=1, shading='albedo'):
+    def forward(self, x):
         # x: [B, 2], in [-bound, bound]
-        # l: [2], plane light direction, nomalized in [-1, 1]
-        # ratio: scalar, ambient ratio, 1 == no shading (albedo only), 0 == only shading (textureless)
 
-        if shading == 'albedo':
-            # no need to query normal
-            sigma, color = self.common_forward(x)
-            normal = None
-        
-        else:
-            # query normal
+        float_x = x.type(torch.float32)
 
-            # sigma, albedo = self.common_forward(x)
-            # normal = self.normal(x)
-        
-            with torch.enable_grad():
-                x.requires_grad_(True)
-                sigma, albedo = self.common_forward(x)
-                # query gradient
-                normal = - torch.autograd.grad(torch.sum(sigma), x, create_graph=True)[0] # [B, 2]
-            normal = safe_normalize(normal)
-            # normal = torch.nan_to_num(normal)
-            # normal = normal.detach()
-
-            # lambertian shading
-            lambertian = ratio + (1 - ratio) * (normal @ l).clamp(min=0) # [B,]
-
-            if shading == 'textureless':
-                color = lambertian.unsqueeze(-1).repeat(1, 3)
-            elif shading == 'normal':
-                color = (normal + 1) / 2
-            else: # 'lambertian'
-                color = albedo * lambertian.unsqueeze(-1)
+        with torch.enable_grad():
+            float_x.requires_grad_(True)
+            sigma, albedo = self.common_forward(float_x)
             
-        return sigma, color, normal
+        return albedo
 
       
     def density(self, x):
