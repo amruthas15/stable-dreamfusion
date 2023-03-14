@@ -1,6 +1,7 @@
 import torch
 import argparse
 import sys
+import os
 
 from nerf.provider import NeRFDataset
 from nerf.utils import *
@@ -8,6 +9,8 @@ from nerf.utils import *
 from nerf.gui import NeRFGUI
 
 # torch.autograd.set_detect_anomaly(True)
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "max_split_size_mb:24"
+
 
 if __name__ == '__main__':
 

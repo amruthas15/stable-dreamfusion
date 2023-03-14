@@ -302,28 +302,8 @@ class Trainer(object):
             self.text_z = None
             return
 
-        if not self.opt.dir_text:
-            self.text_z = self.guidance.get_text_embeds([self.opt.text], [self.opt.negative])
-        else:
-            self.text_z = []
-            for d in ['front', 'side', 'back', 'side', 'overhead', 'bottom']:
-                # construct dir-encoded text
-                text = f"{self.opt.text}, {d} view"
+        self.text_z = self.guidance.get_text_embeds([self.opt.text], [self.opt.negative])
 
-                negative_text = f"{self.opt.negative}"
-
-                # explicit negative dir-encoded text
-                if self.opt.suppress_face:
-                    if negative_text != '': negative_text += ', '
-
-                    if d == 'back': negative_text += "face"
-                    # elif d == 'front': negative_text += ""
-                    elif d == 'side': negative_text += "face"
-                    elif d == 'overhead': negative_text += "face"
-                    elif d == 'bottom': negative_text += "face"
-                
-                text_z = self.guidance.get_text_embeds([text], [negative_text])
-                self.text_z.append(text_z)
 
     def __del__(self):
         if self.log_ptr: 
@@ -339,65 +319,33 @@ class Trainer(object):
                 print(*args, file=self.log_ptr)
                 self.log_ptr.flush() # write immediately to file
 
-    ### ------------------------------	
+    ### ------------------------------ 
 
     def train_step(self, data):
 
-        rays_o = data['rays_o'] # [B, N, 3]
-        rays_d = data['rays_d'] # [B, N, 3]
+        image_coord = data['image_coord'] # [B, N, 2]
+        # rays_o = data['rays_o'] # [B, N, 3]
+        # rays_d = data['rays_d'] # [B, N, 3]
 
-        B, N = rays_o.shape[:2]
+        B, N = image_coord.shape[:2]
         H, W = data['H'], data['W']
 
-        if self.global_step < self.opt.albedo_iters:
-            shading = 'albedo'
-            ambient_ratio = 1.0
-        else: 
-            rand = random.random()
-            if rand > 0.8: 
-                shading = 'albedo'
-                ambient_ratio = 1.0
-            elif rand > 0.4: 
-                shading = 'textureless'
-                ambient_ratio = 0.1
-            else: 
-                shading = 'lambertian'
-                ambient_ratio = 0.1
+        bg_color = torch.rand(B * N, 3) # pixel-wise random
 
-        bg_color = torch.rand((B * N, 3), device=rays_o.device) # pixel-wise random
-        outputs = self.model.render(rays_o, rays_d, staged=False, perturb=True, bg_color=bg_color, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, **vars(self.opt))
+        outputs = self.model.render(image_coord, staged=False, perturb=True, bg_color=bg_color, force_all_rays=True, **vars(self.opt))
         pred_rgb = outputs['image'].reshape(B, H, W, 3).permute(0, 3, 1, 2).contiguous() # [1, 3, H, W]
-        pred_depth = outputs['depth'].reshape(B, 1, H, W)
+        #pred_depth = outputs['depth'].reshape(B, 1, H, W)
         
         # torch_vis_2d(pred_rgb[0])
         
-        # text embeddings
-        if self.opt.dir_text:
-            dirs = data['dir'] # [B,]
-            text_z = self.text_z[dirs]
-        else:
-            text_z = self.text_z
+        # text embeddings (got rid of direction-related text)
+        text_z = self.text_z
         
+        # stable diffusion
         # encode pred_rgb to latents
         loss = self.guidance.train_step(text_z, pred_rgb)
 
-        # regularizations
-        if self.opt.lambda_opacity > 0:
-            loss_opacity = (outputs['weights_sum'] ** 2).mean()
-            loss = loss + self.opt.lambda_opacity * loss_opacity
-
-        if self.opt.lambda_entropy > 0:
-            alphas = outputs['weights_sum'].clamp(1e-5, 1 - 1e-5)
-            # alphas = alphas ** 2 # skewed entropy, favors 0 over 1
-            loss_entropy = (- alphas * torch.log2(alphas) - (1 - alphas) * torch.log2(1 - alphas)).mean()
-                    
-            loss = loss + self.opt.lambda_entropy * loss_entropy
-
-        if self.opt.lambda_orient > 0 and 'loss_orient' in outputs:
-            loss_orient = outputs['loss_orient']
-            loss = loss + self.opt.lambda_orient * loss_orient
-
-        return pred_rgb, pred_depth, loss
+        return pred_rgb, loss
     
     def post_train_step(self):
 
@@ -411,48 +359,35 @@ class Trainer(object):
 
     def eval_step(self, data):
 
-        rays_o = data['rays_o'] # [B, N, 3]
-        rays_d = data['rays_d'] # [B, N, 3]
+        image_coord = data['image_coord'] # [B, N, 2]
 
-        B, N = rays_o.shape[:2]
+        B, N = image_coord.shape[:2]
         H, W = data['H'], data['W']
 
-        shading = data['shading'] if 'shading' in data else 'albedo'
-        ambient_ratio = data['ambient_ratio'] if 'ambient_ratio' in data else 1.0
-        light_d = data['light_d'] if 'light_d' in data else None
-
-        outputs = self.model.render(rays_o, rays_d, staged=True, perturb=False, bg_color=None, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, **vars(self.opt))
+        outputs = self.model.render(image_coord, staged=True, perturb=False, bg_color=None, force_all_rays=True, **vars(self.opt))
         pred_rgb = outputs['image'].reshape(B, H, W, 3)
-        pred_depth = outputs['depth'].reshape(B, H, W)
 
         # dummy 
         loss = torch.zeros([1], device=pred_rgb.device, dtype=pred_rgb.dtype)
 
-        return pred_rgb, pred_depth, loss
+        return pred_rgb, loss
 
     def test_step(self, data, bg_color=None, perturb=False):  
-        rays_o = data['rays_o'] # [B, N, 3]
-        rays_d = data['rays_d'] # [B, N, 3]
+        image_coord = data['image_coord'] # [B, N, 2]
 
-        B, N = rays_o.shape[:2]
+        B, N = image_coord.shape[:2]
         H, W = data['H'], data['W']
 
         if bg_color is not None:
-            bg_color = bg_color.to(rays_o.device)
+            bg_color = bg_color.to(image_coord.device)
         else:
-            bg_color = torch.ones(3, device=rays_o.device) # [3]
+            bg_color = torch.ones(3, device=image_coord.device) # [3]
 
-        shading = data['shading'] if 'shading' in data else 'albedo'
-        ambient_ratio = data['ambient_ratio'] if 'ambient_ratio' in data else 1.0
-        light_d = data['light_d'] if 'light_d' in data else None
-
-        outputs = self.model.render(rays_o, rays_d, staged=True, perturb=perturb, light_d=light_d, ambient_ratio=ambient_ratio, shading=shading, force_all_rays=True, bg_color=bg_color, **vars(self.opt))
+        outputs = self.model.render(image_coord, staged=True, perturb=perturb, force_all_rays=True, bg_color=bg_color, **vars(self.opt))
 
         pred_rgb = outputs['image'].reshape(B, H, W, 3)
-        pred_depth = outputs['depth'].reshape(B, H, W)
-        pred_mask = outputs['weights_sum'].reshape(B, H, W) > 0.95
 
-        return pred_rgb, pred_depth, pred_mask
+        return pred_rgb
 
     def generate_point_cloud(self, loader):
 
@@ -520,7 +455,7 @@ class Trainer(object):
             self.writer = tensorboardX.SummaryWriter(os.path.join(self.workspace, "run", self.name))
 
         start_t = time.time()
-        
+        self.log(f"[INFO] epochs: {max_epochs - self.epoch}")
         for epoch in range(self.epoch + 1, max_epochs + 1):
             self.epoch = epoch
 
@@ -545,7 +480,7 @@ class Trainer(object):
         self.evaluate_one_epoch(loader, name)
         self.use_tensorboardX = use_tensorboardX
 
-    def test(self, loader, save_path=None, name=None, write_video=True):
+    def test(self, loader, save_path=None, name=None, write_video=False):
 
         if save_path is None:
             save_path = os.path.join(self.workspace, 'results')
@@ -562,37 +497,29 @@ class Trainer(object):
 
         if write_video:
             all_preds = []
-            all_preds_depth = []
 
         with torch.no_grad():
 
             for i, data in enumerate(loader):
                 
                 with torch.cuda.amp.autocast(enabled=self.fp16):
-                    preds, preds_depth, _ = self.test_step(data)
+                    preds = self.test_step(data)
 
                 pred = preds[0].detach().cpu().numpy()
                 pred = (pred * 255).astype(np.uint8)
 
-                pred_depth = preds_depth[0].detach().cpu().numpy()
-                pred_depth = (pred_depth - pred_depth.min()) / (pred_depth.max() - pred_depth.min() + 1e-6)
-                pred_depth = (pred_depth * 255).astype(np.uint8)
-
                 if write_video:
                     all_preds.append(pred)
-                    all_preds_depth.append(pred_depth)
                 else:
                     cv2.imwrite(os.path.join(save_path, f'{name}_{i:04d}_rgb.png'), cv2.cvtColor(pred, cv2.COLOR_RGB2BGR))
-                    cv2.imwrite(os.path.join(save_path, f'{name}_{i:04d}_depth.png'), pred_depth)
 
                 pbar.update(loader.batch_size)
 
         if write_video:
             all_preds = np.stack(all_preds, axis=0)
-            all_preds_depth = np.stack(all_preds_depth, axis=0)
+            cv2.imwrite(os.path.join(save_path, f'{name}_rgb.png'), cv2.cvtColor(pred, cv2.COLOR_RGB2BGR))
             
             imageio.mimwrite(os.path.join(save_path, f'{name}_rgb.mp4'), all_preds, fps=25, quality=8, macro_block_size=1)
-            imageio.mimwrite(os.path.join(save_path, f'{name}_depth.mp4'), all_preds_depth, fps=25, quality=8, macro_block_size=1)
 
         self.log(f"==> Finished Test.")
     
@@ -624,7 +551,7 @@ class Trainer(object):
             self.optimizer.zero_grad()
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
-                pred_rgbs, pred_depths, loss = self.train_step(data)
+                pred_rgbs, loss = self.train_step(data)
          
             self.scaler.scale(loss).backward()
             self.post_train_step()
@@ -746,7 +673,7 @@ class Trainer(object):
             self.optimizer.zero_grad()
 
             with torch.cuda.amp.autocast(enabled=self.fp16):
-                pred_rgbs, pred_depths, loss = self.train_step(data)
+                pred_rgbs, loss = self.train_step(data)
          
             self.scaler.scale(loss).backward()
             self.post_train_step()
@@ -757,6 +684,7 @@ class Trainer(object):
                 self.lr_scheduler.step()
 
             loss_val = loss.item()
+            self.log(f"new loss: {loss_val}")
             total_loss += loss_val
 
             if self.local_rank == 0:
@@ -779,6 +707,20 @@ class Trainer(object):
 
         average_loss = total_loss / self.local_step
         self.stats["loss"].append(average_loss)
+
+        #TODO: visualize image at end of each training
+        save_path = os.path.join(self.workspace, 'results')
+
+        name = f'{self.name}_ep{self.epoch:04d}'
+
+        os.makedirs(save_path, exist_ok=True)
+        
+        #pred = pred_rgbs.detach().cpu().numpy()
+        #self.log(f"==> Epoch {self.epoch:04d}, save results to {save_path}, rgb_shape: {pred_rgbs.shape}, pred shape: {pred[0].T.shape}")
+        #imageio.imwrite(os.path.join(save_path, f'{name}_rgb1_{self.epoch:04d}_1.png'), pred[0].T)
+        #pred = (pred * 255).astype(np.uint8)
+        #imageio.imwrite(os.path.join(save_path, f'{name}_rgb2_{self.epoch:04d}_2.png'), pred[0].T)       
+       
 
         if self.local_rank == 0:
             pbar.close()
@@ -825,7 +767,7 @@ class Trainer(object):
                 self.local_step += 1
 
                 with torch.cuda.amp.autocast(enabled=self.fp16):
-                    preds, preds_depth, loss = self.eval_step(data)
+                    preds, loss = self.eval_step(data)
 
                 # all_gather/reduce the statistics (NCCL only support all_*)
                 if self.world_size > 1:
@@ -835,10 +777,6 @@ class Trainer(object):
                     preds_list = [torch.zeros_like(preds).to(self.device) for _ in range(self.world_size)] # [[B, ...], [B, ...], ...]
                     dist.all_gather(preds_list, preds)
                     preds = torch.cat(preds_list, dim=0)
-
-                    preds_depth_list = [torch.zeros_like(preds_depth).to(self.device) for _ in range(self.world_size)] # [[B, ...], [B, ...], ...]
-                    dist.all_gather(preds_depth_list, preds_depth)
-                    preds_depth = torch.cat(preds_depth_list, dim=0)
                 
                 loss_val = loss.item()
                 total_loss += loss_val
@@ -848,20 +786,14 @@ class Trainer(object):
 
                     # save image
                     save_path = os.path.join(self.workspace, 'validation', f'{name}_{self.local_step:04d}_rgb.png')
-                    save_path_depth = os.path.join(self.workspace, 'validation', f'{name}_{self.local_step:04d}_depth.png')
 
                     #self.log(f"==> Saving validation image to {save_path}")
                     os.makedirs(os.path.dirname(save_path), exist_ok=True)
 
                     pred = preds[0].detach().cpu().numpy()
                     pred = (pred * 255).astype(np.uint8)
-
-                    pred_depth = preds_depth[0].detach().cpu().numpy()
-                    pred_depth = (pred_depth - pred_depth.min()) / (pred_depth.max() - pred_depth.min() + 1e-6)
-                    pred_depth = (pred_depth * 255).astype(np.uint8)
                     
                     cv2.imwrite(save_path, cv2.cvtColor(pred, cv2.COLOR_RGB2BGR))
-                    cv2.imwrite(save_path_depth, pred_depth)
 
                     pbar.set_description(f"loss={loss_val:.4f} ({total_loss/self.local_step:.4f})")
                     pbar.update(loader.batch_size)
